@@ -75,6 +75,7 @@ module Fluent
         end
 
         def rollback
+          $log.warn "rollbacked #{Fluent::UniqueId.hex(@unique_id)}"
           if @chunk.pos != @commit_position
             @chunk.seek(@commit_position, IO::SEEK_SET)
             @chunk.truncate(@commit_position)
@@ -122,6 +123,8 @@ module Fluent
         end
 
         def close
+          $log.warn "closed #{Fluent::UniqueId.hex(@unique_id)}"
+
           super
           size = @chunk.size
           @chunk.close
@@ -131,6 +134,8 @@ module Fluent
         end
 
         def purge
+          $log.warn "purged #{Fluent::UniqueId.hex(@unique_id)}"
+
           super
           @chunk.close
           @bytesize = @size = @adding_bytes = @adding_size = 0

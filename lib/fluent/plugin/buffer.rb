@@ -318,6 +318,7 @@ module Fluent
               end
               chunk.mon_exit
             rescue => e
+              log.warn "chunk #{Fluent::UniqueId.hex(chunk.unique_id)}"
               chunk.rollback
               chunk.mon_exit
               errors << e
