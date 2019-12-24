@@ -186,8 +186,19 @@ module Fluent
     end
 
     def supervisor_sigusr1_handler
+      conf = Fluent::Config.build(
+        config_path: config[:config_path],
+        encoding: config[:conf_encoding],
+        additional_config: config[:inline_config],
+        use_v1_config: config[:use_v1_config],
+      )
+
       reopen_log
       send_signal_to_workers(:USR1)
+
+      @fluentd_conf = conf.to_s
+    rescue => e
+      $log.error "Failed to reload config file: #{e}"
     end
 
     def supervisor_sigusr2_handler
