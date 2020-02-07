@@ -158,7 +158,6 @@ module Fluent::Plugin
         $log.warn "this parameter is highly recommended to save the position to resume tailing."
       end
 
-      configure_tag
       configure_encoding
 
       @multiline_mode = parser_config["@type"] =~ /multiline/
@@ -170,17 +169,6 @@ module Fluent::Plugin
       @file_perm = system_config.file_permission || FILE_PERMISSION
       # parser is already created by parser helper
       @parser = parser_create(usage: parser_config['usage'] || @parser_configs.first.usage)
-    end
-
-    def configure_tag
-      if @tag.index('*')
-        @tag_prefix, @tag_suffix = @tag.split('*')
-        @tag_prefix ||= ''
-        @tag_suffix ||= ''
-      else
-        @tag_prefix = nil
-        @tag_suffix = nil
-      end
     end
 
     def configure_encoding
@@ -318,7 +306,7 @@ module Fluent::Plugin
 
     def setup_watcher(path, pe)
       line_buffer_timer_flusher = (@multiline_mode && @multiline_flush_interval) ? TailWatcher::LineBufferTimerFlusher.new(log, @multiline_flush_interval, &method(:flush_buffer)) : nil
-      tw = TailWatcher.new(path, @rotate_wait, pe, log, @read_from_head, @enable_watch_timer, @enable_stat_watcher, @read_lines_limit, method(:update_watcher), line_buffer_timer_flusher, @from_encoding, @encoding, open_on_every_update, &method(:receive_lines))
+      tw = TailWatcher.new(path, @rotate_wait, pe, log, @read_from_head, @enable_watch_timer, @enable_stat_watcher, @read_lines_limit, method(:update_watcher), line_buffer_timer_flusher, @from_encoding, @encoding, open_on_every_update, tag: @tag, &method(:receive_lines))
       tw.attach do |watcher|
         event_loop_attach(watcher.timer_trigger) if watcher.timer_trigger
         event_loop_attach(watcher.stat_trigger) if watcher.stat_trigger
@@ -424,13 +412,8 @@ module Fluent::Plugin
         lb.chomp!
         @parser.parse(lb) { |time, record|
           if time && record
-            tag = if @tag_prefix || @tag_suffix
-                    @tag_prefix + tw.tag + @tag_suffix
-                  else
-                    @tag
-                  end
             record[@path_key] ||= tw.path unless @path_key.nil?
-            router.emit(tag, time, record)
+            router.emit(tw.tag2, time, record)
           else
             log.warn "got incomplete line at shutdown from #{tw.path}: #{lb.inspect}"
           end
@@ -442,13 +425,8 @@ module Fluent::Plugin
     def receive_lines(lines, tail_watcher)
       es = @receive_handler.call(lines, tail_watcher)
       unless es.empty?
-        tag = if @tag_prefix || @tag_suffix
-                @tag_prefix + tail_watcher.tag + @tag_suffix
-              else
-                @tag
-              end
         begin
-          router.emit_stream(tag, es)
+          router.emit_stream(tail_watcher.tag2, es)
         rescue Fluent::Plugin::Buffer::BufferOverflowError
           return false
         rescue
@@ -529,7 +507,7 @@ module Fluent::Plugin
     end
 
     class TailWatcher
-      def initialize(path, rotate_wait, pe, log, read_from_head, enable_watch_timer, enable_stat_watcher, read_lines_limit, update_watcher, line_buffer_timer_flusher, from_encoding, encoding, open_on_every_update, &receive_lines)
+      def initialize(path, rotate_wait, pe, log, read_from_head, enable_watch_timer, enable_stat_watcher, read_lines_limit, update_watcher, line_buffer_timer_flusher, from_encoding, encoding, open_on_every_update, tag: @tag, &receive_lines)
         @path = path
         @rotate_wait = rotate_wait
         @pe = pe || MemoryPositionEntry.new
@@ -552,6 +530,16 @@ module Fluent::Plugin
         @from_encoding = from_encoding
         @encoding = encoding
         @open_on_every_update = open_on_every_update
+
+        @tag = tag
+        if @tag.index('*')
+          @tag_prefix, @tag_suffix = @tag.split('*')
+          @tag_prefix ||= ''
+          @tag_suffix ||= ''
+        else
+          @tag_prefix = nil
+          @tag_suffix = nil
+        end
       end
 
       attr_reader :path
@@ -561,6 +549,15 @@ module Fluent::Plugin
       attr_accessor :timer_trigger
       attr_accessor :line_buffer, :line_buffer_timer_flusher
       attr_accessor :unwatched  # This is used for removing position entry from PositionFile
+
+      def tag2
+        @tag2 ||=
+          if @tag_prefix || @tag_suffix
+            @tag_prefix + tw.tag + @tag_suffix
+          else
+            @tag
+          end
+      end
 
       def tag
         @parsed_tag ||= @path.tr('/', '.').gsub(/\.+/, '.').gsub(/^\./, '')
