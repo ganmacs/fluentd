@@ -460,17 +460,17 @@ module Fluent::Plugin
       return true
     end
 
-    def convert_line_to_event(line, es, tail_watcher)
+    def convert_line_to_event(line, es, path)
       begin
         line.chomp!  # remove \n
         @parser.parse(line) { |time, record|
           if time && record
-            record[@path_key] ||= tail_watcher.path unless @path_key.nil?
+            record[@path_key] ||= path unless @path_key.nil?
             es.add(time, record)
           else
             if @emit_unmatched_lines
               record = {'unmatched_line' => line}
-              record[@path_key] ||= tail_watcher.path unless @path_key.nil?
+              record[@path_key] ||= path unless @path_key.nil?
               es.add(Fluent::EventTime.now, record)
             end
             log.warn "pattern not matched: #{line.inspect}"
@@ -485,7 +485,7 @@ module Fluent::Plugin
     def parse_singleline(lines, tail_watcher)
       es = Fluent::MultiEventStream.new
       lines.each { |line|
-        convert_line_to_event(line, es, tail_watcher)
+        convert_line_to_event(line, es, tail_watcher.path)
       }
       es
     end
@@ -498,13 +498,13 @@ module Fluent::Plugin
         lines.each { |line|
           if @parser.firstline?(line)
             if lb
-              convert_line_to_event(lb, es, tail_watcher)
+              convert_line_to_event(lb, es, tail_watcher.path)
             end
             lb = line
           else
             if lb.nil?
               if @emit_unmatched_lines
-                convert_line_to_event(line, es, tail_watcher)
+                convert_line_to_event(line, es, tail_watcher.path)
               end
               log.warn "got incomplete line before first line from #{tail_watcher.path}: #{line.inspect}"
             else
@@ -518,7 +518,7 @@ module Fluent::Plugin
           lb << line
           @parser.parse(lb) { |time, record|
             if time && record
-              convert_line_to_event(lb, es, tail_watcher)
+              convert_line_to_event(lb, es, tail_watcher.path)
               lb = ''
             end
           }
