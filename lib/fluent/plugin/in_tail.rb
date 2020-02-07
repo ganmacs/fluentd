@@ -413,7 +413,7 @@ module Fluent::Plugin
         @parser.parse(lb) { |time, record|
           if time && record
             record[@path_key] ||= tw.path unless @path_key.nil?
-            router.emit(tw.tag2, time, record)
+            router.emit(tw.tag, time, record)
           else
             log.warn "got incomplete line at shutdown from #{tw.path}: #{lb.inspect}"
           end
@@ -426,7 +426,7 @@ module Fluent::Plugin
       es = @receive_handler.call(lines, tail_watcher)
       unless es.empty?
         begin
-          router.emit_stream(tail_watcher.tag2, es)
+          router.emit_stream(tail_watcher.tag, es)
         rescue Fluent::Plugin::Buffer::BufferOverflowError
           return false
         rescue
@@ -550,17 +550,13 @@ module Fluent::Plugin
       attr_accessor :line_buffer, :line_buffer_timer_flusher
       attr_accessor :unwatched  # This is used for removing position entry from PositionFile
 
-      def tag2
-        @tag2 ||=
+      def tag
+        @tag ||=
           if @tag_prefix || @tag_suffix
-            @tag_prefix + tw.tag + @tag_suffix
+            @tag_prefix + @path.tr('/', '.').gsub(/\.+/, '.').gsub(/^\./, '') + @tag_suffix
           else
             @tag
           end
-      end
-
-      def tag
-        @parsed_tag ||= @path.tr('/', '.').gsub(/\.+/, '.').gsub(/^\./, '')
       end
 
       def wrap_receive_lines(lines)
