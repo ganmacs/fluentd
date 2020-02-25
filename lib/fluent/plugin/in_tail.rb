@@ -317,7 +317,9 @@ module Fluent::Plugin
 
     def setup_watcher(path, pe)
       line_buffer_timer_flusher = @multiline_mode ? TailWatcher::LineBufferTimerFlusher.new(log, @multiline_flush_interval, &method(:flush_buffer)) : nil
-      tw = TailWatcher.new(path, pe, log, @read_from_head, @read_lines_limit, method(:update_watcher), line_buffer_timer_flusher, @from_encoding, @encoding, open_on_every_update, &method(:receive_lines))
+      tw = TailWatcher.new(path, pe, log, @read_from_head, method(:update_watcher), line_buffer_timer_flusher) do |watcher, path|
+        io_handler(watcher, path: path)
+      end
 
       if @enable_watch_timer
         tt = TimerTrigger.new(1, log) { tw.on_notify }
@@ -542,6 +544,12 @@ module Fluent::Plugin
       es
     end
 
+    def io_handler(watcher, path:)
+      IOHandler.new(watcher, path: path, log: log, read_lines_limit: @read_lines_limit, open_on_every_update: @open_on_every_update, from_encoding: @from_encoding, encoding: @encoding) do |lines|
+        receive_lines(lines, watcher)
+      end
+    end
+
     class StatWatcher < Coolio::StatWatcher
       def initialize(path, log, &callback)
         @callback = callback
@@ -573,22 +581,18 @@ module Fluent::Plugin
     end
 
     class TailWatcher
-      def initialize(path, pe, log, read_from_head, read_lines_limit, update_watcher, line_buffer_timer_flusher, from_encoding, encoding, open_on_every_update, &receive_lines)
+      def initialize(path, pe, log, read_from_head, update_watcher, line_buffer_timer_flusher, &io_handler_build)
         @path = path
         @pe = pe || MemoryPositionEntry.new
         @read_from_head = read_from_head
-        @read_lines_limit = read_lines_limit
-        @receive_lines = receive_lines
         @update_watcher = update_watcher
 
         @rotate_handler = RotateHandler.new(log, &method(:on_rotate))
+        @io_handler_build = io_handler_build
         @io_handler = nil
         @log = log
 
         @line_buffer_timer_flusher = line_buffer_timer_flusher
-        @from_encoding = from_encoding
-        @encoding = encoding
-        @open_on_every_update = open_on_every_update
         @watchers = []
       end
 
@@ -696,9 +700,7 @@ module Fluent::Plugin
       end
 
       def io_handler
-        IOHandler.new(self, path: @path, log: @log, read_lines_limit: @read_lines_limit, open_on_every_update: @open_on_every_update, from_encoding: @from_encoding, encoding: @encoding) do |lines|
-          @receive_lines.call(lines, self)
-        end
+        @io_handler_build.call(self)
       end
 
       def swap_state(pe)
