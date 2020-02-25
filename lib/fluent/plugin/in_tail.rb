@@ -423,7 +423,10 @@ module Fluent::Plugin
       tw.detach
 
       tw.close if close_io
-      flush_buffer(tw)
+      if buf = tw.line_buffer_timer_flusher&.line_buffer
+        flush_buffer(tw, bu)
+      end
+
       if tw.unwatched && @pf
         @pf.unwatch(tw.path)
       end
@@ -437,33 +440,31 @@ module Fluent::Plugin
       end
     end
 
-    def flush_buffer(tw)
-      if lb = tw.line_buffer_timer_flusher&.line_buffer
-        lb.chomp!
-        @parser.parse(lb) { |time, record|
-          if time && record
+    def flush_buffer(tw, buf)
+      lb.chomp!
+      @parser.parse(buf) { |time, record|
+        if time && record
+          tag = if @tag_prefix || @tag_suffix
+                  @tag_prefix + tw.tag + @tag_suffix
+                else
+                  @tag
+                end
+          record[@path_key] ||= tw.path unless @path_key.nil?
+          router.emit(tag, time, record)
+        else
+          if @emit_unmatched_lines
+            record = { 'unmatched_line' => lb }
+            record[@path_key] ||= tail_watcher.path unless @path_key.nil?
             tag = if @tag_prefix || @tag_suffix
                     @tag_prefix + tw.tag + @tag_suffix
                   else
                     @tag
                   end
-            record[@path_key] ||= tw.path unless @path_key.nil?
-            router.emit(tag, time, record)
-          else
-            if @emit_unmatched_lines
-              record = { 'unmatched_line' => lb }
-              record[@path_key] ||= tail_watcher.path unless @path_key.nil?
-              tag = if @tag_prefix || @tag_suffix
-                      @tag_prefix + tw.tag + @tag_suffix
-                    else
-                      @tag
-                    end
-              router.emit(tag, Fluent::EventTime.now, record)
-            end
-            log.warn "got incomplete line at shutdown from #{tw.path}: #{lb.inspect}"
+            router.emit(tag, Fluent::EventTime.now, record)
           end
-        }
-      end
+          log.warn "got incomplete line at shutdown from #{tw.path}: #{lb.inspect}"
+        end
+      }
     end
 
     # @return true if no error or unrecoverable error happens in emit action. false if got BufferOverflowError
