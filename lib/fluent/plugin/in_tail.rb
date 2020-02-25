@@ -424,8 +424,6 @@ module Fluent::Plugin
 
       tw.close if close_io
 
-      tw.detach2
-
       if tw.unwatched && @pf
         @pf.unwatch(tw.path)
       end
@@ -623,9 +621,6 @@ module Fluent::Plugin
 
       def detach
         @io_handler.on_notify if @io_handler
-      end
-
-      def detach2
         @line_buffer_timer_flusher&.close
       end
 
