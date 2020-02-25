@@ -423,9 +423,8 @@ module Fluent::Plugin
       tw.detach
 
       tw.close if close_io
-      if buf = tw.line_buffer_timer_flusher&.line_buffer
-        flush_buffer(tw, bu)
-      end
+
+      tw.detach2
 
       if tw.unwatched && @pf
         @pf.unwatch(tw.path)
@@ -624,6 +623,10 @@ module Fluent::Plugin
 
       def detach
         @io_handler.on_notify if @io_handler
+      end
+
+      def detach2
+        @line_buffer_timer_flusher&.close
       end
 
       def close
@@ -942,10 +945,16 @@ module Fluent::Plugin
           end
 
           if Time.now - @start >= @flush_interval
-            @flush_method.call(tw)
+            @flush_method.call(tw) if @line_buffer
             @line_buffer = nil
             @start = nil
           end
+        end
+
+        def close
+          return if @line_buffer
+
+          @flush_method.call(tw)
         end
 
         def reset_timer
