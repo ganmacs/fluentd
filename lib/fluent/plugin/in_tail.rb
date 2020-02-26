@@ -438,30 +438,9 @@ module Fluent::Plugin
     end
 
     def flush_buffer(tw, buf)
-      lb.chomp!
-      @parser.parse(buf) { |time, record|
-        if time && record
-          tag = if @tag_prefix || @tag_suffix
-                  @tag_prefix + tw.tag + @tag_suffix
-                else
-                  @tag
-                end
-          record[@path_key] ||= tw.path unless @path_key.nil?
-          router.emit(tag, time, record)
-        else
-          if @emit_unmatched_lines
-            record = { 'unmatched_line' => lb }
-            record[@path_key] ||= tail_watcher.path unless @path_key.nil?
-            tag = if @tag_prefix || @tag_suffix
-                    @tag_prefix + tw.tag + @tag_suffix
-                  else
-                    @tag
-                  end
-            router.emit(tag, Fluent::EventTime.now, record)
-          end
-          log.warn "got incomplete line at shutdown from #{tw.path}: #{lb.inspect}"
-        end
-      }
+      es = Fluent::MultiEventStream.new
+      convert_line_to_event(buf, es, tw)
+      rotuer.emit_stream(es)
     end
 
     # @return true if no error or unrecoverable error happens in emit action. false if got BufferOverflowError
@@ -808,16 +787,18 @@ module Fluent::Plugin
 
               if !io.nil? && @lines.empty?
                 begin
-                  while true
+                  loop do
                     @fifo << io.readpartial(8192, @iobuf)
                     @fifo.read_lines(@lines)
+
                     if @lines.size >= @read_lines_limit
                       # not to use too much memory in case the file is very large
                       read_more = true
                       break
                     end
                   end
-                rescue EOFError
+                rescue EOFError => e
+                  @log.warn("io error: #{e}")
                 end
               end
 
