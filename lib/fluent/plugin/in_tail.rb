@@ -105,6 +105,9 @@ module Fluent::Plugin
     desc 'Format path with the specified timezone'
     config_param :path_timezone, :string, default: nil
 
+    desc 'message limit per minitutes'
+    config_param :rate_limit, :integer, default: nil
+
     config_section :parse, required: false, multi: true, init: true, param_name: :parser_configs do
       config_argument :usage, :string, default: 'in_tail_parser'
     end
@@ -209,6 +212,11 @@ module Fluent::Plugin
     def start
       super
 
+      if @rate_limit
+        @rate_limiter = TokenBucket.new(@rate_limit)
+        thread_create(:in_tail_rate_limit) { @rate_limiter.start }
+      end
+
       if @pos_file
         pos_file_dir = File.dirname(@pos_file)
         FileUtils.mkdir_p(pos_file_dir, mode: @dir_perm) unless Dir.exist?(pos_file_dir)
@@ -234,6 +242,8 @@ module Fluent::Plugin
       end
 
       super
+
+      @rate_limiter&.stop
     end
 
     def shutdown
@@ -319,7 +329,7 @@ module Fluent::Plugin
 
     def setup_watcher(path, pe)
       line_buffer_timer_flusher = @multiline_mode ? TailWatcher::LineBufferTimerFlusher.new(log, @multiline_flush_interval, &method(:flush_buffer)) : nil
-      tw = TailWatcher.new(path, pe, log, @read_from_head, @read_lines_limit, method(:update_watcher), line_buffer_timer_flusher, @from_encoding, @encoding, open_on_every_update, &method(:receive_lines))
+      tw = TailWatcher.new(path, pe, log, @read_from_head, @read_lines_limit, method(:update_watcher), line_buffer_timer_flusher, @from_encoding, @encoding, open_on_every_update, @rate_limiter, &method(:receive_lines))
 
       if @enable_watch_timer
         tt = TimerTrigger.new(1, log) { tw.on_notify }
@@ -457,7 +467,7 @@ module Fluent::Plugin
                   else
                     @tag
                   end
-            router.emit(tag, Fluent::EventTime.now, record)
+            router_proxy.emit(tag, Fluent::EventTime.now, record)
           end
           log.warn "got incomplete line at shutdown from #{tw.path}: #{buf.inspect}"
         end
@@ -474,7 +484,7 @@ module Fluent::Plugin
                 @tag
               end
         begin
-          router.emit_stream(tag, es)
+          router_proxy.emit_stream(tag, es)
         rescue Fluent::Plugin::Buffer::BufferOverflowError
           return false
         rescue
@@ -555,6 +565,30 @@ module Fluent::Plugin
       es
     end
 
+    private
+
+    def router_proxy
+      @router_proxy ||= @rate_limiter ? RouterProxy.new(router, @rate_limiter, log) : router
+    end
+
+    class RouterProxy
+      def initialize(router, bucket, log)
+        @log = log
+        @bucket = bucket
+        @router = router
+      end
+
+      def emit(tag, time, record)
+        @bucket.add(1)
+        @rotuer.emit(tag, time, record)
+      end
+
+      def emit_stream(tag, es)
+        @bucket.add(es.size)
+        @rotuer.emit_stream(tag, es)
+      end
+    end
+
     class StatWatcher < Coolio::StatWatcher
       def initialize(path, log, &callback)
         @callback = callback
@@ -586,7 +620,7 @@ module Fluent::Plugin
     end
 
     class TailWatcher
-      def initialize(path, pe, log, read_from_head, read_lines_limit, update_watcher, line_buffer_timer_flusher, from_encoding, encoding, open_on_every_update, &receive_lines)
+      def initialize(path, pe, log, read_from_head, read_lines_limit, update_watcher, line_buffer_timer_flusher, from_encoding, encoding, open_on_every_update, rate_limiter, &receive_lines)
         @path = path
         @pe = pe || MemoryPositionEntry.new
         @read_from_head = read_from_head
@@ -603,6 +637,8 @@ module Fluent::Plugin
         @encoding = encoding
         @open_on_every_update = open_on_every_update
         @watchers = []
+        @rate_limiter = rate_limiter
+        @queue = []
       end
 
       attr_reader :path
@@ -637,6 +673,15 @@ module Fluent::Plugin
         rescue Errno::ENOENT
           # moved or deleted
           stat = nil
+        end
+
+        if @rate_limiter&.full?
+          @queue << stat
+          return
+        end
+
+        @queue.each do |old_stat|
+          @rotate_handler.on_notify(old_stat) if @rotate_handler
         end
 
         @rotate_handler.on_notify(stat) if @rotate_handler
