@@ -566,6 +566,7 @@ module Fluent::Plugin
         open_on_every_update: @open_on_every_update,
         from_encoding: @from_encoding,
         encoding: @encoding,
+        pool: pool,
         &method(:receive_lines)
       )
     end
@@ -729,6 +730,76 @@ module Fluent::Plugin
         pe # This pe will be updated in on_rotate after TailWatcher is initialized
       end
 
+      class ThreadPool
+        T = Struct.new(:id, :thread)
+
+        def initialize(val, max: nil, limit: nil)
+          @min = val
+          @max = max
+          @stop = false
+          @limit = limit
+          @que = limit ? SizedQueue.new(limit) : Queue.new
+          @threads = []
+        end
+
+        def start
+          @threads = @min.times.map do |i|
+            T.new(i, Thread.new { run(i) })
+          end
+
+          Thread.new { thread_montor }
+        end
+
+        def run
+          loop do
+            task = @que.pop
+            if task == :stop
+              break
+            end
+
+            task.call
+          end
+        end
+
+        def stop
+          (@max || @min).times { @que.push(:stop) }
+          @threads.each do |t|
+            t.thread.join
+          end
+        end
+
+        def post(&block)
+          @que.push(block, false)
+        rescue ThreadError
+          raise BlockingError
+        end
+
+        class BlockingError < StandardError; end
+
+        private
+
+        def thread_montor
+          loop do
+            @threads.each do |t|
+              unless t.thread.alive?
+                t.thread << Thread.new { run(t.id) }
+              end
+            end
+
+            if @max
+              if @que.empty? && @threads.size > @min
+                (@threads.size - @min).times { @que.push(:stop) }
+              elsif !@que.empty? && @threads.size < @max
+                id = @threads.size
+                @threads << T.new(id, Thread.new { run(id) })
+              end
+            end
+
+            sleep 1
+          end
+        end
+      end
+
       class FIFO
         def initialize(from_encoding, encoding)
           @from_encoding = from_encoding
@@ -788,7 +859,7 @@ module Fluent::Plugin
       end
 
       class IOHandler
-        def initialize(watcher, path:, read_lines_limit:, log:, open_on_every_update:, from_encoding: nil, encoding: nil, &receive_lines)
+        def initialize(watcher, path:, read_lines_limit:, log:, open_on_every_update:, from_encoding: nil, encoding: nil, pool: nil, &receive_lines)
           @watcher = watcher
           @path = path
           @read_lines_limit = read_lines_limit
@@ -800,11 +871,19 @@ module Fluent::Plugin
           @io = nil
           @notify_mutex = Mutex.new
           @log = log
+          @pool = pool
 
           @log.info "following tail of #{@path}"
         end
 
         def on_notify
+          if @pool
+            @pool.post { @notify_mutex.synchronize { handle_notify } }
+          else
+            @notify_mutex.synchronize { handle_notify }
+          end
+        rescue BlockingError
+          # it may blocking whole wold becaue it runs in main thread
           @notify_mutex.synchronize { handle_notify }
         end
 
