@@ -60,6 +60,7 @@ else
   uri = "druby://#{host}:#{port}"
 end
 
+require 'fluent/env'
 require 'fluent/log'
 require 'fluent/engine'
 require 'fluent/system_config'
